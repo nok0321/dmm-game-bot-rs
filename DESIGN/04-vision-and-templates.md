@@ -97,12 +97,18 @@ impl Matcher {
 ```rust
 pub fn client_to_screen(window_screen_x, window_screen_y, client_x, client_y) -> (i32, i32);
 pub fn roi_to_rect(roi: &RoiPct, client_w: u32, client_h: u32) -> Rect;
-pub fn full_rect(client_w: u32, client_h: u32) -> Rect;
 ```
 
-`client_to_screen` は現状 `bot/sequence.rs::click_match` 内でインライン展開
-(`rect.screen_x + cx`) しているため呼び出されないが、座標変換ヘルパとして
-公開 API に残置している (将来の DSL / モック実装からの再利用に備える)。
+`Rect::full(client_w, client_h)` は `vision/matcher.rs::Rect` の関連関数として
+提供される (旧 `coords::full_rect` から移行)。
+
+`client_to_screen` は `bot/sequence.rs::click_match` でクライアント→スクリーン
+座標変換に使用される。
+
+`roi_to_rect` の安全装置 (`Config::validate` を通過した RoiPct でも防御):
+- 非有限 (NaN/Inf) の `RoiPct` フィールドが入った場合は空矩形を返す。
+- 整数化後は `client_w/h` から `saturating_sub` でクランプし、
+  動的 ROI 生成 (CoordCache 等) でも u32 underflow を起こさない。
 
 `roi_to_rect` の安全装置:
 - `client_w==0 || client_h==0` (ウィンドウ最小化等) なら空矩形を即返す。
@@ -164,3 +170,17 @@ ROI は **「クライアント領域全体に対する比率」** (`RoiPct { x_
 5. **霊晶石ガード専用の追加要件**:
    - **必ず ROI を設定する** (`Config::validate` が `roi: None` を弾く)。
    - **必ず右端 4 列目スロットに限定する** (他スロットの「0」と区別するため)。
+
+## 4.6 座標キャッシュ (CoordCache)
+
+サイクル 1 で記録した **静的位置テンプレ** の中心座標を `vision/coord_cache.rs::CoordCache`
+に保持し、サイクル 2 以降は **キャッシュ位置周辺の小 ROI** で先に NCC を回す
+(ヒットしなければ通常 ROI へフォールバック)。CPU と取得遅延の削減が目的。
+
+対象 (ホワイトリスト固定): `ap_plus_button` / `use_button` / `toubatsu_button` /
+`toubatsu_start` のみ。`reisseki_zero_guard` / `next_button` / `close_button` /
+`tap_indicator` / `ap_recovered_use_max` は **絶対対象外** (ROI 厳格化方向のみ可、
+動的位置や安全装置の保護)。
+
+詳細は [`11-coord-cache.md`](11-coord-cache.md) を参照。本機構は本書の
+`Matcher::find_in_rect` を **そのまま** 利用し、Matcher 自体には変更を加えない。

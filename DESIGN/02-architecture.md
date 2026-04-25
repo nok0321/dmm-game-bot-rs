@@ -88,7 +88,8 @@ dmm-game-bot/
     │   ├── mod.rs
     │   ├── template.rs         # Template / TemplateLibrary
     │   ├── matcher.rs          # Matcher / Match / Rect
-    │   └── coords.rs           # roi_to_rect / full_rect / client_to_screen
+    │   ├── coords.rs           # roi_to_rect / client_to_screen
+    │   └── coord_cache.rs      # CoordCache (静的位置テンプレ用、§DESIGN/11)
     ├── platform/
     │   ├── mod.rs
     │   ├── dpi.rs              # set_dpi_aware

@@ -5,7 +5,7 @@ use image::{GrayImage, ImageReader};
 
 use crate::config::{RoiPct, TemplateConfig};
 use crate::error::{BotError, Result};
-use crate::vision::coords::{full_rect, roi_to_rect};
+use crate::vision::coords::roi_to_rect;
 use crate::vision::matcher::Rect;
 
 #[derive(Debug)]
@@ -45,7 +45,7 @@ impl Template {
     pub fn resolve_roi(&self, screen_w: u32, screen_h: u32) -> Rect {
         match self.roi {
             Some(r) => roi_to_rect(&r, screen_w, screen_h),
-            None => full_rect(screen_w, screen_h),
+            None => Rect::full(screen_w, screen_h),
         }
     }
 }

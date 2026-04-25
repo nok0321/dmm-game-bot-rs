@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
 use image::{DynamicImage, GrayImage};
@@ -10,6 +11,8 @@ use crate::error::{BotError, Result};
 use crate::platform::capture::{build_capturer, Capturer};
 use crate::platform::input::{DryRunSender, InputSender, SendInputSender};
 use crate::platform::window::GameWindow;
+use crate::vision::coord_cache::{small_roi, CachedCenter, CoordCache};
+use crate::vision::coords::client_to_screen;
 use crate::vision::matcher::{Match, Matcher};
 use crate::vision::template::{Template, TemplateLibrary};
 
@@ -25,6 +28,10 @@ pub struct BotEngine {
     input: Box<dyn InputSender>,
     templates: TemplateLibrary,
     dry_run: bool,
+    /// 静的位置テンプレ用の座標キャッシュ (DESIGN/11-coord-cache.md)。
+    /// `try_click_template` から内側可変アクセスする。
+    /// `do_assert_reisseki_zero` は経路上 **絶対に参照しない** (霊晶石ガード保護)。
+    coord_cache: RefCell<CoordCache>,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +81,7 @@ impl BotEngine {
             input,
             templates,
             dry_run,
+            coord_cache: RefCell::new(CoordCache::new()),
         })
     }
 
@@ -178,7 +186,7 @@ impl BotEngine {
     pub fn run_one_cycle(&self) -> Result<CycleReport> {
         let started_at = now_jst();
         let mut steps: Vec<StepLog> = Vec::new();
-        let poll = self.config.loop_.poll.clone();
+        let poll = &self.config.loop_.poll;
 
         let _ = self.window.focus();
 
@@ -231,6 +239,22 @@ impl BotEngine {
         }
 
         let completed_at = now_jst();
+
+        // サイクル末で座標キャッシュの累積状況を 1 行で出す (DESIGN/11 §11.8)。
+        if self.config.loop_.coord_cache.enabled {
+            let cache = self.coord_cache.borrow();
+            let s = cache.stats();
+            tracing::info!(
+                "coord cache: hits={} small_roi_miss_fallback={} (succeeded={} failed={}) invalidations={} entries={}",
+                s.hits,
+                s.small_roi_misses,
+                s.fallback_succeeded,
+                s.fallback_failed,
+                s.invalidations,
+                cache.entries_len(),
+            );
+        }
+
         Ok(CycleReport {
             started_at,
             completed_at,
@@ -354,6 +378,12 @@ impl BotEngine {
     /// 連続 `stability_count` 回「位置 ±tol_px / score ±tol」内のマッチが続いたら
     /// クリックを発行する (フェードイン中の半透明ボタンへの誤クリック対策)。
     /// 見つからなかったら `(None, best_score)` を返す。
+    ///
+    /// 座標キャッシュ機構 (DESIGN/11) が有効かつテンプレがホワイトリスト
+    /// (`CACHEABLE_TEMPLATES`) に含まれる場合、各イテレーションで
+    /// 「キャッシュ位置周辺の小 ROI で先に NCC → 失敗時に通常 ROI へフォールバック」
+    /// する。霊晶石ガード経路 (`do_assert_reisseki_zero`) は本関数を呼ばないため、
+    /// キャッシュは構造的に到達不能。
     fn try_click_template(
         &self,
         name: &str,
@@ -366,12 +396,68 @@ impl BotEngine {
         let pos_tol = self.config.input.stability_position_tol_px;
         let score_tol = self.config.input.stability_score_tol;
 
+        let cache_enabled = self.config.loop_.coord_cache.enabled;
+        let cache_pad = self.config.loop_.coord_cache.search_pad_px;
+
         let mut best_score = 0f32;
         let mut last_match: Option<Match> = None;
         let mut stable_count: usize = 0;
 
         loop {
-            let (matched, score) = self.capture_and_match(tpl)?;
+            let gray = self.capture_gray()?;
+            let client_w = gray.width();
+            let client_h = gray.height();
+
+            // クライアント領域変動でキャッシュ全破棄 (DESIGN/11 §11.4)。
+            if cache_enabled {
+                self.coord_cache.borrow_mut().observe(client_w, client_h);
+            }
+
+            let roi_full = tpl.resolve_roi(client_w, client_h);
+
+            // キャッシュ参照: ホワイトリスト外なら lookup が None を返すので安全。
+            let cached = if cache_enabled {
+                self.coord_cache.borrow().lookup(name)
+            } else {
+                None
+            };
+
+            // 1 段階目: 小 ROI (キャッシュ有り) または通常 ROI (無し) で探索。
+            let mut cache_hit_path = cached.is_some();
+            let (mut matched, mut score) = if let Some(cc) = cached {
+                let small = small_roi(cc, tpl.width, tpl.height, cache_pad, client_w, client_h);
+                tracing::debug!(
+                    "{} cache lookup: small ROI ({},{}) {}x{} (cached_center=({},{}))",
+                    name, small.x, small.y, small.w, small.h, cc.center_x, cc.center_y
+                );
+                self.matcher.find_in_rect(&gray, tpl, small)
+            } else {
+                self.matcher.find_in_rect(&gray, tpl, roi_full)
+            };
+
+            // 2 段階目: 小 ROI で空振りなら通常 ROI へフォールバック。
+            if matched.is_none() && cache_hit_path {
+                self.coord_cache.borrow_mut().note_small_roi_miss();
+                tracing::info!(
+                    "{} small ROI miss (best={:.4}) — falling back to full ROI",
+                    name, score
+                );
+                let (m2, s2) = self.matcher.find_in_rect(&gray, tpl, roi_full);
+                if m2.is_some() {
+                    self.coord_cache.borrow_mut().note_fallback_succeeded();
+                    self.coord_cache.borrow_mut().evict(name);
+                    tracing::info!(
+                        "{} fallback hit (score={:.4}) — refreshing cache on stable click",
+                        name, s2
+                    );
+                } else {
+                    self.coord_cache.borrow_mut().note_fallback_failed();
+                }
+                matched = m2;
+                score = s2;
+                cache_hit_path = false;
+            }
+
             if score > best_score {
                 best_score = score;
             }
@@ -405,7 +491,7 @@ impl BotEngine {
                         }
                         stable_count = 1;
                     }
-                    last_match = Some(m.clone());
+                    last_match = Some(m);
 
                     if stable_count >= stability_required {
                         tracing::info!(
@@ -417,6 +503,26 @@ impl BotEngine {
                             stable_count,
                             stability_required
                         );
+
+                        // クリック発行直前にキャッシュ更新 (ホワイトリスト外は record 内で no-op)。
+                        if cache_enabled {
+                            self.coord_cache.borrow_mut().record(
+                                name,
+                                CachedCenter {
+                                    center_x: m.center_x,
+                                    center_y: m.center_y,
+                                    last_score: m.score,
+                                },
+                            );
+                            if cache_hit_path {
+                                self.coord_cache.borrow_mut().note_hit();
+                                tracing::info!(
+                                    "{} cache hit: clicked at ({},{}) score={:.4}",
+                                    name, m.center_x, m.center_y, m.score
+                                );
+                            }
+                        }
+
                         std::thread::sleep(random_delay(
                             self.config.input.pre_click_min_ms,
                             self.config.input.pre_click_max_ms,
@@ -468,8 +574,7 @@ impl BotEngine {
         let rect = self.window.client_rect()?;
         let radius = self.config.input.click_jitter_radius_px;
         let (cx, cy) = jitter_click_point((m.center_x as i32, m.center_y as i32), radius);
-        let screen_x = rect.screen_x + cx;
-        let screen_y = rect.screen_y + cy;
+        let (screen_x, screen_y) = client_to_screen(rect.screen_x, rect.screen_y, cx, cy);
         let press_ms = random_press_duration_ms(
             self.config.input.click_press_duration_min_ms,
             self.config.input.click_press_duration_max_ms,

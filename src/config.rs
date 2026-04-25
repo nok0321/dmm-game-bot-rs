@@ -65,7 +65,38 @@ pub struct LoopConfig {
     pub max_cycles: u32,
     #[serde(default)]
     pub poll: PollConfig,
+    #[serde(default)]
+    pub coord_cache: CoordCacheConfig,
 }
+
+/// 座標キャッシュ機構の設定。詳細は `DESIGN/11-coord-cache.md` を参照。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CoordCacheConfig {
+    /// false で機構を完全 bypass (デバッグ・回帰検証用)。既定 true。
+    #[serde(default = "default_coord_cache_enabled")]
+    pub enabled: bool,
+    /// キャッシュ中心 ± この値 px をテンプレ寸法に加えた範囲を小 ROI とする。
+    #[serde(default = "default_coord_cache_search_pad_px")]
+    pub search_pad_px: u32,
+    /// キャッシュヒット時に stability check を緩和するか (既定 false; 安全側)。
+    /// 現バージョンではフラグだけ用意し、ロジックは将来拡張用。
+    #[serde(default = "default_coord_cache_relax_stability_on_hit")]
+    pub relax_stability_on_hit: bool,
+}
+
+impl Default for CoordCacheConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_coord_cache_enabled(),
+            search_pad_px: default_coord_cache_search_pad_px(),
+            relax_stability_on_hit: default_coord_cache_relax_stability_on_hit(),
+        }
+    }
+}
+
+fn default_coord_cache_enabled() -> bool { true }
+fn default_coord_cache_search_pad_px() -> u32 { 24 }
+fn default_coord_cache_relax_stability_on_hit() -> bool { false }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PollConfig {
@@ -264,6 +295,12 @@ const MIN_POLL_INTERVAL_MS: u64 = 100;
 /// 通常ポーリングと別枠。`bot::sequence::POLL_SLEEP_FLOOR_MS` と整合させる。
 const MIN_STABILITY_POLL_MS: u64 = 50;
 
+/// 座標キャッシュ機構の小 ROI パディング下限。0 ではキャッシュ位置のわずかな
+/// ズレを許容できないので 1 を強制。
+const COORD_CACHE_MIN_PAD_PX: u32 = 1;
+/// 同上限。これ以上は通常 ROI と差がなくなりキャッシュの意味が薄れる。
+const COORD_CACHE_MAX_PAD_PX: u32 = 256;
+
 impl Config {
     pub fn load_from_file(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
@@ -361,6 +398,15 @@ impl Config {
             return Err(BotError::Config(format!(
                 "input.stability_poll_ms = {} is too small (minimum {}ms)",
                 self.input.stability_poll_ms, MIN_STABILITY_POLL_MS
+            )));
+        }
+
+        // 座標キャッシュ search_pad_px の範囲検査 (DESIGN/11 §11.7)。
+        let pad = self.loop_.coord_cache.search_pad_px;
+        if !(COORD_CACHE_MIN_PAD_PX..=COORD_CACHE_MAX_PAD_PX).contains(&pad) {
+            return Err(BotError::Config(format!(
+                "loop.coord_cache.search_pad_px = {} out of range [{}, {}]",
+                pad, COORD_CACHE_MIN_PAD_PX, COORD_CACHE_MAX_PAD_PX
             )));
         }
 
@@ -475,5 +521,36 @@ mod tests {
         let mut cfg = base_config();
         cfg.templates.clear();
         assert!(cfg.validate().is_err());
+    }
+
+    // === 座標キャッシュ関連 (DESIGN/11) ===
+
+    #[test]
+    fn validate_rejects_zero_search_pad() {
+        let mut cfg = base_config();
+        cfg.loop_.coord_cache.search_pad_px = 0;
+        let err = cfg.validate().unwrap_err();
+        assert!(format!("{}", err).contains("coord_cache.search_pad_px"));
+    }
+
+    #[test]
+    fn validate_rejects_huge_search_pad() {
+        let mut cfg = base_config();
+        cfg.loop_.coord_cache.search_pad_px = 257;
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn coord_cache_default_round_trip() {
+        // [loop.coord_cache] 省略時の既定値が想定通りであることを回帰防止。
+        let cc = CoordCacheConfig::default();
+        assert!(cc.enabled);
+        assert_eq!(cc.search_pad_px, 24);
+        // 絶対不変条件: stability check 緩和は既定 false (DESIGN/11 §11.9)。
+        assert!(!cc.relax_stability_on_hit);
+        // バリデーション通過確認。
+        let mut cfg = base_config();
+        cfg.loop_.coord_cache = cc;
+        assert!(cfg.validate().is_ok());
     }
 }

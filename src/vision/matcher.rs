@@ -5,7 +5,7 @@ use imageproc::template_matching::{
 
 use crate::vision::template::Template;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Match {
     pub score: f32,
     /// クライアント領域全体での中心座標。
@@ -19,6 +19,13 @@ pub struct Rect {
     pub y: u32,
     pub w: u32,
     pub h: u32,
+}
+
+impl Rect {
+    /// クライアント領域全体を覆う Rect (`(0, 0)` 起点で `w x h`)。
+    pub fn full(client_w: u32, client_h: u32) -> Self {
+        Self { x: 0, y: 0, w: client_w, h: client_h }
+    }
 }
 
 pub struct Matcher;
@@ -54,6 +61,12 @@ impl Matcher {
             screen_h
         );
 
+        // ROI またはテンプレが 0 寸法の場合は crop_imm が panic するため早期 return。
+        // 通常 (config 経路) は Config::validate で弾かれるが、座標キャッシュなど
+        // 動的に Rect を組む将来パスに備えて防御する。
+        if roi_w == 0 || roi_h == 0 || template.width == 0 || template.height == 0 {
+            return (None, 0.0);
+        }
         if roi_w < template.width || roi_h < template.height {
             return (None, 0.0);
         }
