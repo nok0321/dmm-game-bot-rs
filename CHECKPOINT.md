@@ -1,6 +1,6 @@
 # Checkpoint: dmm-game-bot 周回完走確認まで
-Updated: 2026-04-25T20:00+09:00 (JST)
-Session: (continuation) 周回成立 + 観測性改善
+Updated: 2026-04-26T08:30+09:00 (JST)
+Session: (continuation) 座標キャッシュ機構 (DESIGN/11) 実装
 
 ## 目標
 
@@ -48,6 +48,36 @@ Windows 用 Rust CLI ツールを完成させる。最終形は単一 exe バイ
   - ログタイムスタンプを **JST (+09:00)** に変更（独自 `JstTime` impl で `tracing_subscriber::FormatTime`）
   - CLI フラグ `--post-battle-min-wait-ms <N>` を追加（動作確認用に 25 分待機を一時的に短縮可能）
 
+### このセッション (2026-04-26) での追加・修正
+
+- [x] **座標キャッシュ機構を実装** (DESIGN/11-coord-cache.md)
+  - `src/vision/coord_cache.rs` を新設
+    (`CoordCache` / `CachedCenter` / `CoordCacheStats` / `small_roi` /
+    `CACHEABLE_TEMPLATES`)
+  - キャッシュ対象 (ホワイトリスト固定): `ap_plus_button` / `use_button` /
+    `toubatsu_button` / `toubatsu_start`
+  - 絶対対象外: `reisseki_zero_guard` (霊晶石ガード保護)、
+    `next_button` / `close_button` / `tap_indicator` / `ap_recovered_use_max`
+  - 失効条件: クライアント領域 (W×H) 変動で全エントリ破棄
+  - `BotEngine` に `coord_cache: RefCell<CoordCache>` 追加、
+    `try_click_template` で「小 ROI 先行 → 失敗時に通常 ROI フォールバック」
+  - `do_assert_reisseki_zero` は構造的にキャッシュ非到達 (経路完全分離維持)
+  - 観測性: サイクル末サマリ + 個別ヒット/ミス/フォールバック/失効ログ
+- [x] **事前整地** (robust-review S-Critical 解消)
+  - `vision/coords.rs::roi_to_rect`: `saturating_sub` 統一 + NaN 防御
+  - `vision/matcher.rs::find_in_rect`: 0 寸法 ROI / template ガード追加
+  - `vision/coords.rs::full_rect` を `vision/matcher.rs::Rect::full` へ集約
+  - `vision/matcher.rs::Match` を `Copy` 化、`bot/sequence.rs` の `m.clone()` 除去
+  - `bot/sequence.rs::click_match` で `coords::client_to_screen` を活用
+- [x] **設計書整合**
+  - DESIGN/11-coord-cache.md 新設 (12 節構成、不変条件・テスト計画含む)
+  - DESIGN/02 / 04 / 06 / 09 / 10 / README に CoordCache 相互参照を追加
+  - spec-audit Critical 2 件 (AUDIT-1: full_rect 旧 API 残置 / AUDIT-2:
+    予告章未追加) を解消
+- [x] **テスト件数**: 9 → **20 件** (coord_cache 8 + config 3 追加、全 PASS)
+- [x] **ビルド状態**: `cargo clippy --workspace --all-targets` 警告 0、
+  `cargo build --release` 成功 (`target/release/dmm-game-bot.exe` 6,240,256 B)
+
 ## 進行中の課題
 
 ### Issue #1: 〜 #3: **解決済み** (上記参照)
@@ -56,6 +86,20 @@ Windows 用 Rust CLI ツールを完成させる。最終形は単一 exe バイ
 - Issue #1 (ToubatsuStart 後 debounce 失敗) → ハード sleep 化で根本解決
 - Issue #2 (next_button / close_button 偽マッチ) → 閾値 + ROI 引き締めで解決
 - Issue #3 (1 サイクル完走未確認) → 2 サイクル以上の継続を実機で確認
+
+### このセッションで残した別タスク (spawn_task 経由で chip 化)
+
+robust-review / spec-audit が出した周辺 Finding のうち、CoordCache と直交する
+ものは「別タスク」chip として待機中 (進行可否はユーザー判断):
+
+1. **capture.rs::extract_pixels の i32 オーバーフロー** (ROB-4) — 防御的修正
+2. **try_click_template の一過性 capture failure リトライ** (ROB-5) —
+   1 回の PrintWindow 失敗で 30 分サイクルが捨てられないようカウンタ化
+3. **Config::validate に pre/post_click min<=max 検証** (ROB-7) — 起動時に弾く
+4. **templates ファイル名のパストラバーサル拒否** (SEC-1) —
+   `..` / 絶対パスを `Config::validate` で弾く
+5. **DESIGN/*.md 横断の表記揺れ** (AUDIT-4..9) — 25/27.5 分、Step 9/10、
+   テンプレ 9/10、debounce 残置理由、霊晶石ガード用語表
 
 ### 残タスク（軽微）
 
@@ -68,18 +112,9 @@ Windows 用 Rust CLI ツールを完成させる。最終形は単一 exe バイ
 
 ### 優先度: 中
 
-1. **座標キャッシュ機構** (このセッションで提案された新アイデア)
-   - サイクル 1 の各テンプレマッチ位置 (center_x, center_y) を記録
-   - サイクル 2 以降、ウィンドウサイズが同一なら、キャッシュ位置周辺の小 ROI でだけ NCC を回し、
-     見つからなければ通常 ROI にフォールバック
-   - 高速化と CPU 削減目的。設計メモ:
-     - 静的位置テンプレ (ap_plus_button / use_button / toubatsu_button / toubatsu_start) は効果大
-     - 動的・条件付き表示 (next_button: 結果画面で位置が違う / close_button: モーダル位置依存) は
-      キャッシュではなくパターンマッチを残すべき
-     - キャッシュは「同一ウィンドウサイズ」「同一クライアント解像度」を前提とし、
-      ウィンドウリサイズ検知で無効化する
-     - キャッシュヒット時は stability check も簡略化可能 (位置確定済みのため)
-   - 実装着手前に simplify / robust-review を回しておくと差分が見やすい
+1. **座標キャッシュ機構**: ✅ **2026-04-26 実装完了** (DESIGN/11-coord-cache.md 参照)
+   - 実機で 2 サイクル `--live` 検証はまだ未実施。次セッションで `cache hits` の
+     カウントが期待通り (cycle1: 0、cycle2 以降: 4 種テンプレ各 ≥1) に出ることを確認。
 
 2. **detect-once の overlay 機能**
    - 検出結果を画面上に矩形オーバーレイで PNG 保存する `--save-overlay PATH` オプション
@@ -112,11 +147,14 @@ Windows 用 Rust CLI ツールを完成させる。最終形は単一 exe バイ
 
 - プラットフォーム: Windows 11 + bash (Git Bash 想定)
 - Rust: 1.94.0 (msvc target, x86_64-pc-windows-msvc, crt-static)
-- ブランチ: **git 未初期化**（初期化推奨。本ファイルを起点に作業ログを残していく）
-- ビルド状態: **成功**（`target/release/dmm-game-bot.exe` 6,222,336 bytes、modify time 2026-04-25 20:00）
-- clippy: 警告なし（最終確認時）
-- テスト: 9 件 (config 検証系のみ)
-- 実機検証: **2 サイクル継続成立**（2026-04-25 20:00 頃、`--live` で確認）
+- ブランチ: **`feat/coord-cache`** (本セッション) / `main` (前回までの履歴)
+  リモート: https://github.com/nok0321/dmm-game-bot-rs.git に push 済み
+- ビルド状態: **成功**（`target/release/dmm-game-bot.exe` 6,240,256 bytes、
+  modify time 2026-04-26 08:25）
+- clippy: 警告なし（`cargo clippy --workspace --all-targets`）
+- テスト: **20 件** (config 11 件 + coord_cache 8 件 + その他 1 件、全 PASS)
+- 実機検証: 2 サイクル継続成立（2026-04-25 20:00、`--live`）。
+  座標キャッシュ機構の実機検証は **未実施** (次セッションのタスク)
 
 ## ファイル構成
 
@@ -136,16 +174,20 @@ Windows 用 Rust CLI ツールを完成させる。最終形は単一 exe バイ
 │   ├── lib.rs
 │   ├── cli.rs                      # CLI + JstTime (tracing 用 JST フォーマッタ)
 │   ├── error.rs                    # BotError (TemplateGoneTimeout は削除済み)
-│   ├── config.rs                   # PollConfig に next1_settle_wait_ms / next2_settle_wait_ms /
-│   │                               #  post_battle_min_wait_ms / InputConfig::stability_poll_ms 追加
+│   ├── config.rs                   # PollConfig + CoordCacheConfig (DESIGN/11) 追加、
+│   │                               #  Config::validate で search_pad_px 範囲検査
 │   ├── domain/{mod,step,action}.rs
-│   ├── vision/{mod,template,matcher,coords}.rs
+│   ├── vision/{mod,template,matcher,coords,coord_cache}.rs  # coord_cache.rs 新設 (DESIGN/11)
 │   ├── platform/{mod,window,capture,input,dpi}.rs
 │   └── bot/
 │       ├── mod.rs
-│       ├── sequence.rs             # do_click_then_min_wait (新), wait_template_gone は削除
+│       ├── sequence.rs             # do_click_then_min_wait, try_click_template に
+│       │                           #  CoordCache 統合 (RefCell<CoordCache>)
 │       ├── cycle.rs                # JST + cutoff 計算 (jst_offset 公開)
 │       └── humanize.rs
+├── DESIGN/
+│   ├── 01〜10-*.md                 # 既存設計書
+│   └── 11-coord-cache.md           # 座標キャッシュ機構 (本セッション追加)
 └── target/release/dmm-game-bot.exe # 6.2MB 単一バイナリ
 ```
 
@@ -153,9 +195,12 @@ Windows 用 Rust CLI ツールを完成させる。最終形は単一 exe バイ
 
 ### まずやること
 
-1. **`git init` してコミット**: 「初回 2 サイクル継続成立」のスナップショットを 1 コミットに固める
-2. CHECKPOINT.md を読んで状況把握
-3. 何を着手するか優先度から選ぶ。**「座標キャッシュ機構」が筆頭候補**
+1. CHECKPOINT.md を読んで状況把握
+2. 座標キャッシュ機構の **実機検証** (`--max-cycles 2 --live`):
+   - サイクル 1 末: `coord cache: hits=0 small_roi_miss_fallback=0 (...) entries=4`
+   - サイクル 2 末: `coord cache: hits=4 small_roi_miss_fallback=0 (...) entries=4`
+   - 期待値が出なければ DEBUG ログ (`-vv`) で `cache lookup`・`small ROI miss` を確認
+3. 余裕があれば次の課題に着手 (CHECKPOINT 「未着手」優先度を参照)
 
 ### 触っていい / 触らないでほしい不変条件
 
@@ -164,6 +209,10 @@ Windows 用 Rust CLI ツールを完成させる。最終形は単一 exe バイ
     threshold 引き上げ / ROI 厳格化はアリだが、「失敗時にクリックしない」コードパスは絶対に変えない
   - `safety.dry_run = true` 既定。`--live` 明示で初めて実クリック
   - JST 固定ログ（システムロケールに依存させない）
+  - 座標キャッシュ `CACHEABLE_TEMPLATES` (`vision/coord_cache.rs`) に
+    `reisseki_zero_guard` / `next_button` / `close_button` / `tap_indicator` /
+    `ap_recovered_use_max` を **絶対に追加しない**
+    (DESIGN/11 §11.9 不変条件、テストで機械的に保護)
 - **触っていい**:
   - 各テンプレの threshold / ROI（実機での best score 観測に応じて）
   - sleep 系の値（next1_settle_wait_ms / next2_settle_wait_ms / post_battle_min_wait_ms 等）
@@ -193,4 +242,8 @@ target/release/dmm-game-bot.exe -v --live --max-cycles 2 run
 
 ### git ログ
 
-git 未初期化のため履歴なし。新セッションで `git init` 後、本ファイルを起点に作業ログを残していく。
+`main` ブランチ:
+- `5fe9ed0` feat: 初期ベータ版コミット (DMM ブラウザゲーム自動化ボット)
+
+`feat/coord-cache` ブランチ (本セッション):
+- 座標キャッシュ機構 (DESIGN/11) を 1 コミットで作成し PR 経由でマージ予定。

@@ -94,6 +94,30 @@ debounce_timeout_ms = 60000          # 予備 (現状未使用)
 `default_interval_ms` / `post_battle_interval_ms` / `debounce_interval_ms` のいずれかが
 `MIN_POLL_INTERVAL_MS = 100ms` 未満なら `BotError::Config`。タイトループ防止。
 
+## 6.5.1 [loop.coord_cache] (CoordCacheConfig)
+
+```toml
+[loop.coord_cache]
+enabled = true
+search_pad_px = 24
+relax_stability_on_hit = false
+```
+
+| キー | 型 | コード既定 | 用途 |
+|---|---|---|---|
+| `enabled` | `bool` | `true` | 座標キャッシュ機構を有効化。`false` で完全 bypass (デバッグ用) |
+| `search_pad_px` | `u32` | `24` | キャッシュ中心 ± この値 px をテンプレ寸法に加えた範囲を小 ROI とする |
+| `relax_stability_on_hit` | `bool` | `false` | キャッシュヒット時に stability check を緩和するか (既定 false; 安全側) |
+
+**バリデーション**:
+- `search_pad_px == 0` → `BotError::Config` (小 ROI が template 寸法と同寸でズレを許容できない)
+- `search_pad_px > 256` → `BotError::Config` (大 ROI と差がなくなりキャッシュ意味が薄れる)
+- `relax_stability_on_hit` 既定値 `false` をユニットテストで回帰防止
+  (DESIGN/11 §11.9 不変条件サマリ参照)
+
+機構の詳細・対象テンプレのホワイトリスト・観測性ログは
+[`11-coord-cache.md`](11-coord-cache.md) を参照。
+
 ## 6.6 [stop]
 
 ```toml
@@ -208,3 +232,4 @@ close_button           threshold=0.93  roi=(0.20,0.50,0.60,0.45)
 | 全テンプレの `roi.*_pct ∈ [0.0, 1.0]`、`w_pct,h_pct > 0` | 同上 |
 | ポーリング間隔 (default/post_battle/debounce) ≥ 100ms | 同上 |
 | `stability_poll_ms ≥ 50ms` | 同上 |
+| `loop.coord_cache.search_pad_px ∈ [1, 256]` | 同上 (DESIGN/11 §11.7) |

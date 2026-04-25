@@ -2,7 +2,8 @@
 
 ## 9.1 現状 (ベータ版時点)
 
-ユニットテストは 9 件、いずれも `src/config.rs::tests` モジュールに集約:
+ユニットテストは 9 件、いずれも `src/config.rs::tests` モジュールに集約。
+CoordCache (DESIGN/11) 実装後は **+11 件で計 20 件** となる (§9.1.1)。
 
 | テスト | 確認内容 |
 |---|---|
@@ -24,6 +25,31 @@
 実機 E2E:
 - 2026-04-25 に実機 (Chrome + 「あやかしランブル」) で 2 サイクル継続成立を目視確認。
 - ドライランモードでテンプレ検出ログを目視するフェーズが手動 E2E になっている。
+
+### 9.1.1 CoordCache 実装後の追加テスト
+
+DESIGN/11-coord-cache.md §11.10 に伴って追加される 11 件:
+
+`src/vision/coord_cache.rs::tests` (8 件):
+
+| テスト名 | 確認内容 |
+|---|---|
+| `whitelist_excludes_reisseki_guard` | `CACHEABLE_TEMPLATES` に `reisseki_zero_guard` が含まれない (絶対不変条件) |
+| `whitelist_excludes_dynamic_templates` | `next_button` / `close_button` / `tap_indicator` / `ap_recovered_use_max` 非含有 |
+| `record_ignores_non_whitelisted` | ホワイトリスト外を `record` しても `lookup` が None。ホワイトリスト内は保存される |
+| `observe_invalidates_on_size_change` | クライアント (W,H) 変動で全エントリ削除 + invalidations++ |
+| `observe_same_size_is_noop` | 同サイズ再観測で entries 保持 + invalidations 不変 |
+| `small_roi_clamps_at_origin` | 角ボタン (`cx<pad`) で u32 underflow せず `x>=0` |
+| `small_roi_clamps_at_far_edge` | `cx=client_w-1, cy=client_h-1` で w/h クランプ |
+| `small_roi_handles_zero_client` | `client_w==0 || client_h==0` でも空矩形が成立 |
+
+`src/config.rs::tests` (3 件):
+
+| テスト名 | 確認内容 |
+|---|---|
+| `validate_rejects_zero_search_pad` | `search_pad_px = 0` で起動失敗 |
+| `validate_rejects_huge_search_pad` | `search_pad_px > 256` で起動失敗 |
+| `coord_cache_default_round_trip` | `[loop.coord_cache]` 省略時の既定値 + `relax_stability_on_hit` 既定 false (回帰防止) を一括検証 |
 
 ## 9.2 未着手の統合テスト計画
 
@@ -100,7 +126,7 @@ CI 整備は未着手。手動で:
 ```bash
 cargo build --release   # crt-static 確認
 cargo clippy            # 警告ゼロ目標 (CHECKPOINT 最終確認時警告なし)
-cargo test              # 9 件のユニットテスト
+cargo test              # 9 件のユニットテスト (CoordCache 実装後は 20 件 — §9.1.1)
 ```
 
 を流して通ることをコミット前に確認する運用。

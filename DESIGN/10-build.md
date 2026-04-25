@@ -112,6 +112,7 @@ target/release/dmm-game-bot.exe -v --live --max-cycles 2 run
 1. `cargo build --release` が成功する。
 2. `target/release/dmm-game-bot.exe` のサイズが概ね 6 MB 前後 (大幅増減があれば依存追加の見直し)。
 3. `cargo test` で 9 件のユニットテストが全て通る (霊晶石ガード回帰防止)。
+   CoordCache (DESIGN/11) 実装後は計 20 件。詳細は [`09-testing.md`](09-testing.md) §9.1.1。
 4. `cargo clippy` で警告ゼロ。
 5. `dmm-game-bot.exe -V` でバージョンが出る。
 6. `dmm-game-bot.exe -v detect-once` で 9 種テンプレの読み込みログが INFO で出る。

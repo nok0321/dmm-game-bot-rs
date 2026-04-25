@@ -43,6 +43,7 @@ v1.1 ですが、ベータ版完成までに追加・変更された下記要素
 | [08-safety-and-errors.md](08-safety-and-errors.md) | 霊晶石ガード、エラー型、ドライラン、デイリー停止 |
 | [09-testing.md](09-testing.md) | 現行ユニットテストと未着手の統合テスト計画 |
 | [10-build.md](10-build.md) | リリースビルド、依存、配布構成 |
+| [11-coord-cache.md](11-coord-cache.md) | 座標キャッシュ機構 (CoordCache) — 静的位置テンプレ用の小ROI先行マッチ |
 
 ## 関連ドキュメント
 
