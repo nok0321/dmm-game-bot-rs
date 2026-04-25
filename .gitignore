@@ -1,0 +1,31 @@
+# Rust build outputs
+/target/
+
+# Cargo backup files
+**/*.rs.bk
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Claude Code / agent local state (per-user, not part of the project)
+.claude/
+
+# OS metadata
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Local capture / debug outputs from `dmm-game-bot capture`
+/capture.png
+*.capture.png
+/captures/
+
+# Logs (RUST_LOG redirected, etc.)
+*.log
+
+# Local-only configs (use config/default.toml as the source of truth)
+/config/local.toml

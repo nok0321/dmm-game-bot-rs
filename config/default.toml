@@ -1,0 +1,152 @@
+#
+# 本ファイルを直接編集する前に、まず --dry-run で動作確認することを強く推奨。
+
+# テンプレートディレクトリ。設定ファイル相対で解決される。
+# このリポジトリのレイアウトでは ../templates にテンプレ画像を置いている。
+templates_dir = "../templates"
+
+[window]
+# Chrome のページタイトルにこの文字列が含まれるウィンドウを探す。
+title_pattern = "あやかしランブル"
+
+[capture]
+# "print_window" (推奨, 非アクティブでも撮れる) | "bitblt" (フォールバック)
+method = "print_window"
+
+[loop]
+max_cycles = 0  # 0 = 無限ループ。デイリー切替で停止する。
+
+[loop.poll]
+default_interval_ms = 1500       # ステップ 1〜5, 8 の通常ポーリング間隔
+default_timeout_ms = 60000       # 通常ステップの未検出タイムアウト
+post_battle_interval_ms = 7000   # ステップ 7 (Next1) のロング待機ポーリング (5〜10秒)
+post_battle_timeout_ms = 2700000 # Next1 探索の最大時間 = 45 分
+# ToubatsuStart クリック直後にハードに sleep する時間。
+# 戦闘は最低 30 分かかり、その間 next_button / toubatsu_start / close_button が
+# 偽マッチで stability check も通り得る (実機ログ実証) ので、最低でもこの時間は
+# 一切画面を見ない。0 にすると旧挙動 (即時 next_button 探索) に戻る。
+post_battle_min_wait_ms = 1650000 # 27.5 分 (本物の戦闘 30 分より少し短めに余裕。コード既定は 25 分)
+# Next1 クリック後のハード sleep。Next1/Next2 はリザルト系の連続画面で
+# 同じ位置に同じ next_button が出るため debounce では判別できない。
+# 画面遷移アニメ完了を見越して数秒固定で待つ。
+next1_settle_wait_ms = 3000
+# Next2 クリック後の「報酬獲得!!」モーダル表示アニメ待ち。
+# アニメ途中で close_button を探すと背景の静的偽マッチ (実機 (791, 668) 0.9053)
+# が安定してしまうため、モーダル完成を待ってから探索開始する。
+next2_settle_wait_ms = 2000
+close_button_timeout_ms = 5000  # ステップ 9 の探索上限 (タイムアウトは正常スキップ)
+debounce_interval_ms = 1500      # 予備 (現状未使用 — 将来同テンプレ消失検出が要るステップ用)
+debounce_timeout_ms = 60000      # 予備 (現状未使用)
+
+[stop]
+daily_cutoff_jst = "05:00"
+
+[input]
+click_jitter_radius_px = 3
+click_press_duration_min_ms = 60
+click_press_duration_max_ms = 120
+# テンプレマッチ → クリック発行 の間に挟む遅延。
+# テンプレが見えた瞬間のアニメーション中はボタンがまだ反応しないことがあるため、
+# 落ち着くまで一拍置く。値を大きくすると安定するが 1 周時間が伸びる。
+pre_click_min_ms = 150
+pre_click_max_ms = 300
+# クリック発行 → 次の画面遷移検出開始 の間に挟む遅延。
+post_click_min_ms = 400
+post_click_max_ms = 800
+# === Stability check ===
+# 「マッチ位置とスコアが N 回連続で安定」してから初めてクリックする。
+# フェードイン中の半透明ボタンは位置・スコアが揺らぐためマッチが連続しない →
+# アニメーション完了まで自動的に待つ効果がある。
+# 1 にすると安定性チェックを無効化 (旧挙動)。2〜3 を推奨。
+stability_count = 2
+stability_position_tol_px = 6   # 同位置とみなす中心座標の許容差 (ピクセル)
+stability_score_tol = 0.03      # 同スコアとみなす NCC 差の許容差
+# pending stability 中の高速ポーリング間隔。初回マッチ後から click までの
+# 「pending stability N/M」滞留を短縮するための値で、初回マッチ前のポーリング
+# (loop.poll.*_interval_ms) とは別枠。最小 50ms。
+stability_poll_ms = 50
+
+[safety]
+# 既定はドライラン。本番運用時のみ false に。
+# 霊晶石ガード失敗時は常に abort される (設定不可、コードでハードコード)。
+dry_run = true
+
+# ===== テンプレート定義 =====
+#
+# threshold: NCC スコアの採用下限 (0.0〜1.0)。
+# roi: クライアント領域全体に対する比率 (省略可、省略時は全画面探索)。
+#       roi = { x_pct = 0.0, y_pct = 0.0, w_pct = 1.0, h_pct = 1.0 } で全画面と等価。
+#
+# 初期値は元画像 1277×693 想定。実機で `detect-once` を回し
+# best score を見ながら threshold を 0.02〜0.05 単位で詰めていくのが現実的。
+#
+# 実機ログ (2026-04-25) で本物のマッチは概ね 0.99+ で観測されたため、
+# 偽マッチ抑制のため通常テンプレは 0.92〜0.95 程度まで引き上げた。
+
+[templates.ap_plus_button]
+file = "ap_plus_button.png"
+threshold = 0.93
+# AP+ アイコンは Home 画面上部の AP 表示帯にしか出ないため上端に限定。
+roi = { x_pct = 0.0, y_pct = 0.0, w_pct = 1.0, h_pct = 0.30 }
+
+[templates.ap_recovered_use_max]
+file = "ap_recovered_use_max.png"
+threshold = 0.93
+
+# !!!!! 課金通貨ガード !!!!!
+# このテンプレが「マッチした = 霊晶石スロット選択数 0」=「使用安全」と判定する。
+# - threshold は他より高め (0.90) に設定し、誤通過を防ぐ。
+# - roi は他スロットの「0」表示と誤マッチしないよう、必ず右端 4 列目に限定する。
+#   下記 x_pct 等は 1277×693 想定の暫定値。実機で必ずキャリブレーションすること。
+[templates.reisseki_zero_guard]
+file = "reisseki_zero_guard.png"
+threshold = 0.90
+roi = { x_pct = 0.66, y_pct = 0.20, w_pct = 0.30, h_pct = 0.65 }
+
+[templates.use_button]
+file = "use_button.png"
+threshold = 0.93
+
+[templates.tap_indicator]
+file = "tap_indicator.png"
+threshold = 0.90  # 光って動く部分なので他より少し緩めに
+
+[templates.toubatsu_button]
+file = "toubatsu_button.png"
+threshold = 0.93
+# Home 右下の朱色「討伐」ボタン。下半分かつ右寄りに限定。
+roi = { x_pct = 0.40, y_pct = 0.50, w_pct = 0.60, h_pct = 0.50 }
+
+[templates.toubatsu_start]
+file = "toubatsu_start.png"
+# 実機では本物が 1.0000、戦闘中の偽マッチは右下隅 (1223, 643) で 0.9157 が観測された。
+# 0.92 にすれば偽マッチを切れて本物 (1.0) は十分通る。
+# フェードイン中も 0.92 を超えるはずだが、ToubatsuStart は探索 60s なので
+# 通らなければ TemplateWaitTimeout で Fail になり次サイクルで仕切り直し。
+threshold = 0.92
+# PartySelect 画面右下の「討伐開始!」円形ボタン。
+roi = { x_pct = 0.55, y_pct = 0.55, w_pct = 0.45, h_pct = 0.45 }
+
+[templates.next_button]
+file = "next_button.png"
+# 戦闘画面で score=0.94〜0.95 の偽マッチが多発したため 0.95 → 0.96 に引き上げ。
+# 本物のスコアは現状不明 (実機ログでは戦闘前にしか起動していないため未観測)。
+# 通らない場合は本物時のスコアに合わせて 0.92〜0.95 へ下方調整する。
+threshold = 0.96
+# 結果画面下部中央の「次へ」。下半分の中で更に下端寄り (y_pct=0.65 以降) に絞る。
+# 戦闘画面の右下隅 (1166, 658) ≈ y_ratio 0.95 の偽マッチを抑制。
+roi = { x_pct = 0.0, y_pct = 0.65, w_pct = 1.0, h_pct = 0.35 }
+
+[templates.close_button]
+file = "close_button.png"
+# 実機 (2026-04-25) でモーダル背景の静的偽マッチ (791, 668) が常に
+# score=0.9053 で安定して stability check を通過してしまった。
+# 本物の close_button は run 2 で best=0.9262 観測。間を取って 0.93 に設定し、
+# 偽マッチ (0.9053) を切り、本物 (0.92+) を通す。
+# Next2 後の next2_settle_wait_ms (2 秒) でモーダルが完全に出てから
+# 探索を始めるので、本物のスコアは 0.9262 より高くなる見込み。
+# それでもタイムアウトする場合は実機 detect-once でスコアを確認後、下方調整。
+threshold = 0.93
+# 報酬達成モーダル下部中央の「閉じる」。
+# 静的偽マッチ (791, 668) は y_pct=0.965 にあるため、bottom 5% を ROI から除外。
+roi = { x_pct = 0.20, y_pct = 0.50, w_pct = 0.60, h_pct = 0.45 }
