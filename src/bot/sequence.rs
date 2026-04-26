@@ -256,7 +256,7 @@ impl BotEngine {
             let cache = self.coord_cache.borrow();
             let s = cache.stats();
             tracing::info!(
-                "coord cache: hits={} small_roi_miss_fallback={} (succeeded={} failed={}) invalidations={} entries={}",
+                "coord cache: hits={} misses={} (recovered={} still_missing={}) invalidations={} entries={}",
                 s.hits,
                 s.small_roi_misses,
                 s.fallback_succeeded,
@@ -534,19 +534,26 @@ impl BotEngine {
             if matched.is_none() && cache_hit_path {
                 self.coord_cache.borrow_mut().note_small_roi_miss();
                 tracing::info!(
-                    "{} small ROI miss (best={:.4}) — falling back to full ROI",
-                    name, score
+                    "{} small ROI miss (best={:.4} < threshold={:.4}) — falling back to full ROI",
+                    name, score, tpl.threshold
                 );
                 let (m2, s2) = self.matcher.find_in_rect(&gray, tpl, roi_full);
                 if m2.is_some() {
                     self.coord_cache.borrow_mut().note_fallback_succeeded();
                     self.coord_cache.borrow_mut().evict(name);
                     tracing::info!(
-                        "{} fallback hit (score={:.4}) — refreshing cache on stable click",
+                        "{} fallback recovered (score={:.4}) — refreshing cache on stable click",
                         name, s2
                     );
                 } else {
                     self.coord_cache.borrow_mut().note_fallback_failed();
+                    // フォールバックでも見つからなかった = 画面遷移途中の可能性が高い。
+                    // 次の poll で再試行されるため致命ではないが、繰り返し出る場合は
+                    // 遷移待ちの sleep 値や ROI 設定を見直す指標になる。
+                    tracing::warn!(
+                        "{} fallback also missed (best={:.4} < threshold={:.4}) — likely transition not settled, will retry",
+                        name, s2, tpl.threshold
+                    );
                 }
                 matched = m2;
                 score = s2;

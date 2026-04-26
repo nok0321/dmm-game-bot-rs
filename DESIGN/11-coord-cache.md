@@ -273,8 +273,17 @@ fn default_coord_cache_relax_stability_on_hit() -> bool { false }
 **サイクル末サマリ (INFO):**
 
 ```
-coord cache: hits=5 small_roi_miss_fallback=1 (succeeded=1 failed=0) invalidations=0 entries=4
+coord cache: hits=5 misses=1 (recovered=1 still_missing=0) invalidations=0 entries=4
 ```
+
+| 表示語 | 内部フィールド | 意味 |
+|---|---|---|
+| `hits` | `stats.hits` | 小 ROI で stability check を通過しクリックに至った回数 |
+| `misses` | `stats.small_roi_misses` | 小 ROI で未検出 → 大 ROI へフォールバック発動した回数 |
+| `recovered` | `stats.fallback_succeeded` | 大 ROI フォールバックで本物が見つかった回数 (cache evict 済) |
+| `still_missing` | `stats.fallback_failed` | 大 ROI でも見つからなかった回数 (画面遷移途中の可能性、次 poll で retry) |
+| `invalidations` | `stats.invalidations` | クライアント (W,H) 変動で全エントリを破棄した回数 |
+| `entries` | `entries.len()` | 現在キャッシュに乗っているテンプレ数 |
 
 `run_one_cycle` の return 直前に 1 行出す (累積、サイクル間で持続)。
 
@@ -282,9 +291,10 @@ coord cache: hits=5 small_roi_miss_fallback=1 (succeeded=1 failed=0) invalidatio
 
 | 場面 | レベル | 例 |
 |---|---|---|
-| キャッシュヒット (stable で click 発行直前) | INFO | `info!("{name} cache hit: small ROI ({x},{y}) {w}x{h} score={:.4}")` |
-| 小 ROI ミス → 大 ROI フォールバック開始 | INFO | `info!("{name} small ROI miss (best={:.4}) — falling back to full ROI")` |
-| 大 ROI フォールバック成功 | INFO | `info!("{name} fallback hit at ({cx},{cy}) — refreshing cache")` |
+| キャッシュヒット (stable で click 発行直前) | INFO | `info!("{name} cache hit: clicked at ({x},{y}) score={:.4}")` |
+| 小 ROI ミス → 大 ROI フォールバック開始 | INFO | `info!("{name} small ROI miss (best={:.4} < threshold={:.4}) — falling back to full ROI")` |
+| 大 ROI フォールバック成功 | INFO | `info!("{name} fallback recovered (score={:.4}) — refreshing cache on stable click")` |
+| 大 ROI フォールバックも空振り | WARN | `warn!("{name} fallback also missed (best={:.4} < threshold={:.4}) — likely transition not settled, will retry")` |
 | baseline 変動による全破棄 | WARN | `warn!("client size changed {Wp}x{Hp} → {Wn}x{Hn} — invalidating coord cache (entries={N})")` |
 | 通常 ROI 探索 (キャッシュ無し) | DEBUG | 既存 `match '{name}': search rect ...` をそのまま流用 |
 
