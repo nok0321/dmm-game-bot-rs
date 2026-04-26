@@ -233,3 +233,4 @@ close_button           threshold=0.93  roi=(0.20,0.50,0.60,0.45)
 | ポーリング間隔 (default/post_battle/debounce) ≥ 100ms | 同上 |
 | `stability_poll_ms ≥ 50ms` | 同上 |
 | `loop.coord_cache.search_pad_px ∈ [1, 256]` | 同上 (DESIGN/11 §11.7) |
+| `[input]` min/max ペアが `min ≤ max` (`click_press_duration_*_ms` / `pre_click_*_ms` / `post_click_*_ms`) | 同上 (TOML 編集ミスで逆転した値を起動時に弾く) |
