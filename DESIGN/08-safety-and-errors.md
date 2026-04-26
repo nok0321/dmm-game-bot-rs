@@ -86,6 +86,12 @@ pub enum BotError {
 - `bot/sequence.rs::do_assert_reisseki_zero` の **失敗時パス**:
   `Err(BotError::ReissekiGuardFailed { best_score })` 直前にクリック発行や
   「最後にもう 1 回試す」のような分岐を入れない。
+- 同 `do_assert_reisseki_zero` の **キャプチャ失敗リトライ分岐**:
+  `should_propagate_capture_failure` で false が返った後の処理は
+  「ログ出力 → deadline 確認 → sleep → continue」だけ。
+  ここにクリック発行や「最後の手段の click」を絶対に追加しない。
+  retry 中はガード未確認状態が維持されるので、これを破らない限り
+  「ガード PASS なしにクリックしない」不変条件は機械的に保たれる。
 - `Config::validate` 内の `REISSEKI_GUARD_MIN_THRESHOLD = 0.80` を下げない。
 - `safety.dry_run` 既定値 `true`。
 - `JST 固定ログ` (システムロケール依存にしない)。
@@ -155,6 +161,24 @@ v1.1 設計書には **「ステップ 6 (討伐開始) を踏んだ後にデイ
 50ms 未満を弾く。逆もまた然りで、ループ内の `max` を消されても
 `Config::validate` が起動を許さない。
 
+## 8.5.1 一過性キャプチャ失敗のリトライ (ROB-5)
+
+`PrintWindowCapturer` / `BitBltCapturer` はフォーカス切替・GPU 一時不在で
+`BotError::CaptureFailed` を返すことがある。1 回の失敗で 30 分超のサイクル
+(特に Next1: 戦闘 25 分待機後) を捨てるのは費用対効果が悪いため、
+連続失敗カウンタが `loop.poll.capture_retry_threshold` (既定 3) に達するまでは
+`warn!` ログを出して continue する。
+
+| 配置 | 挙動 | 不変条件 |
+|---|---|---|
+| `try_click_template` | retry 中はクリック発行しない (deadline 超過時は `(None, best_score)` を返してスキップ・致命を呼び出し側が判断) | 旧来の `OnMiss::Fail` / `Skip` 動作は維持 |
+| `do_assert_reisseki_zero` | retry 中も継続的に `reisseki_zero_guard` を探すだけ。**クリック発行ロジックは存在しない (機械的保証)**。連続失敗閾値超過は `BotError::CaptureFailed` 伝播、deadline 超過は `BotError::ReissekiGuardFailed` 伝播 | 「ガード未確認状態でのクリック発行」は依然として絶対に発生しない |
+| 判定関数 | `should_propagate_capture_failure(failures, threshold)` 純粋関数。`threshold.max(1)` で 0 を 1 として正規化。`saturating_add` で overflow セーフ | `#[cfg(test)]` でユニットテスト 5 件 |
+| カウンタリセット | キャプチャ成功で `consecutive_capture_failures = 0` | 一過性失敗の累積を断つ |
+
+設定値 `capture_retry_threshold = 1` は旧挙動 (1 回目で即伝播) と等価。
+`= 0` も `max(1)` 正規化により旧挙動。`= 2` 以上で初めてリトライ効果が出る。
+
 ## 8.6 安全装置一覧
 
 | 装置 | 動作 | コード位置 |
@@ -165,6 +189,7 @@ v1.1 設計書には **「ステップ 6 (討伐開始) を踏んだ後にデイ
 | 霊晶石ガード threshold 下限 | `>= 0.80` を起動時強制 | `config.rs::REISSEKI_GUARD_MIN_THRESHOLD` |
 | 霊晶石ガード ROI 必須 | `roi: None` を起動時拒否 | `config.rs::Config::validate` |
 | Stability check | 連続 N 回安定マッチ後にだけクリック | `sequence.rs::try_click_template` |
+| キャプチャ失敗リトライ | 連続 N 回未満は warn ログで継続、N 回到達で初めて伝播 (ROB-5) | `sequence.rs::should_propagate_capture_failure` + `try_click_template` / `do_assert_reisseki_zero` |
 | ハード sleep (Toubatsu/Next1/Next2) | 戦闘演出・遷移アニメ中は画面を見ない | `sequence.rs::do_click_then_min_wait` |
 | Step 9 タイムアウトの正常スキップ | `OnMiss::Skip` で次サイクルへ | `sequence.rs::do_step` |
 | デイリー切替 (05:00 JST) | サイクル先頭で時刻判定 | `sequence.rs::run_loop` + `cycle.rs::next_cutoff_after` |

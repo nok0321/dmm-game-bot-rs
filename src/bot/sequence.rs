@@ -20,6 +20,17 @@ use crate::vision::template::{Template, TemplateLibrary};
 /// 将来の改変や直接呼び出しに備えてループ内側でも保険を張る (タイトループ防止)。
 const POLL_SLEEP_FLOOR_MS: u64 = 50;
 
+/// 連続キャプチャ失敗カウンタを 1 進め、`threshold` に達したかを返す。
+/// `threshold` 到達なら呼び出し側はエラーを伝播 (致命扱い)、未満なら継続 (リトライ)。
+///
+/// 純粋関数として分離してあるのは、ループ全体を Windows API ごとモック化するのは
+/// 重すぎるため、判定ロジックだけは単体テストで挙動を保証したいから。
+/// 詳細は [`tests::capture_retry_*`] を参照。
+fn should_propagate_capture_failure(consecutive_failures: &mut u32, threshold: u32) -> bool {
+    *consecutive_failures = consecutive_failures.saturating_add(1);
+    *consecutive_failures >= threshold.max(1)
+}
+
 pub struct BotEngine {
     config: Config,
     window: GameWindow,
@@ -333,13 +344,57 @@ impl BotEngine {
     /// 霊晶石ガード: ROI 限定でゼロ状態テンプレを探す。
     /// 見えなければ `BotError::ReissekiGuardFailed` を返してサイクルを停止する。
     /// **このパスは絶対にクリックを発行しない** (課金通貨の誤消費防止)。
+    ///
+    /// 連続キャプチャ失敗の retry も入っているが、retry 分岐は単に continue する
+    /// だけでクリック発行パスは一切増えていない。capture が連続失敗し閾値を
+    /// 超えれば `BotError::CaptureFailed` を伝播 (これも当然クリック発行なし)。
+    /// 不変条件: 「ガード未確認の状態でクリックは絶対に発行されない」。
     fn do_assert_reisseki_zero(&self, timeout_ms: u64) -> Result<StepLog> {
         let started = Instant::now();
         let tpl = self.templates.require("reisseki_zero_guard")?;
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let capture_retry_threshold = self.config.loop_.poll.capture_retry_threshold;
         let mut best_score = 0f32;
+        let mut consecutive_capture_failures: u32 = 0;
         loop {
-            let (matched, score) = self.capture_and_match(tpl)?;
+            let (matched, score) = match self.capture_and_match(tpl) {
+                Ok(res) => {
+                    consecutive_capture_failures = 0;
+                    res
+                }
+                Err(err) => {
+                    if should_propagate_capture_failure(
+                        &mut consecutive_capture_failures,
+                        capture_retry_threshold,
+                    ) {
+                        // 致命扱い。ReissekiGuardFailed ではなく CaptureFailed を伝播するが、
+                        // どちらにせよ「ガード未確認」のためクリックは発行されない。
+                        return Err(err);
+                    }
+                    tracing::warn!(
+                        "reisseki guard capture failed ({}/{}): {} — retrying (NOT clicking 'use')",
+                        consecutive_capture_failures,
+                        capture_retry_threshold,
+                        err
+                    );
+                    if Instant::now() >= deadline {
+                        tracing::error!(
+                            "REISSEKI GUARD FAILED — capture flapping (best={:.4} < threshold={:.4}) — refusing to click 'use'",
+                            best_score,
+                            tpl.threshold
+                        );
+                        return Err(BotError::ReissekiGuardFailed { best_score });
+                    }
+                    std::thread::sleep(Duration::from_millis(
+                        self.config
+                            .loop_
+                            .poll
+                            .default_interval_ms
+                            .max(POLL_SLEEP_FLOOR_MS),
+                    ));
+                    continue;
+                }
+            };
             if score > best_score {
                 best_score = score;
             }
@@ -384,6 +439,10 @@ impl BotEngine {
     /// 「キャッシュ位置周辺の小 ROI で先に NCC → 失敗時に通常 ROI へフォールバック」
     /// する。霊晶石ガード経路 (`do_assert_reisseki_zero`) は本関数を呼ばないため、
     /// キャッシュは構造的に到達不能。
+    ///
+    /// `BotError::CaptureFailed` は連続 `capture_retry_threshold` 回までは捕捉して
+    /// 警告ログを出してリトライする (PrintWindow の一過性失敗で 30 分超のサイクルを
+    /// 捨てないため)。閾値到達でのみ伝播。
     fn try_click_template(
         &self,
         name: &str,
@@ -395,6 +454,7 @@ impl BotEngine {
         let stability_required = self.config.input.stability_count.max(1) as usize;
         let pos_tol = self.config.input.stability_position_tol_px;
         let score_tol = self.config.input.stability_score_tol;
+        let capture_retry_threshold = self.config.loop_.poll.capture_retry_threshold;
 
         let cache_enabled = self.config.loop_.coord_cache.enabled;
         let cache_pad = self.config.loop_.coord_cache.search_pad_px;
@@ -402,9 +462,44 @@ impl BotEngine {
         let mut best_score = 0f32;
         let mut last_match: Option<Match> = None;
         let mut stable_count: usize = 0;
+        let mut consecutive_capture_failures: u32 = 0;
 
         loop {
-            let gray = self.capture_gray()?;
+            // capture_gray() の一過性失敗は ROB-5 の retry 機構で吸収。
+            // CoordCache 統合 (DESIGN/11) によりキャプチャと NCC が分離されたため、
+            // retry 対象は capture_gray() のみ (matcher.find_in_rect は失敗を返さない)。
+            let gray = match self.capture_gray() {
+                Ok(g) => {
+                    consecutive_capture_failures = 0;
+                    g
+                }
+                Err(err) => {
+                    if should_propagate_capture_failure(
+                        &mut consecutive_capture_failures,
+                        capture_retry_threshold,
+                    ) {
+                        return Err(err);
+                    }
+                    tracing::warn!(
+                        "{} capture failed ({}/{}): {} — retrying",
+                        name,
+                        consecutive_capture_failures,
+                        capture_retry_threshold,
+                        err
+                    );
+                    if Instant::now() >= deadline {
+                        tracing::warn!(
+                            "{} not found and capture flapping within {}ms (best={:.4})",
+                            name,
+                            timeout_ms,
+                            best_score
+                        );
+                        return Ok((None, best_score));
+                    }
+                    std::thread::sleep(Duration::from_millis(poll_ms.max(POLL_SLEEP_FLOOR_MS)));
+                    continue;
+                }
+            };
             let client_w = gray.width();
             let client_h = gray.height();
 
@@ -580,5 +675,70 @@ impl BotEngine {
             self.config.input.click_press_duration_max_ms,
         );
         self.input.click_at(screen_x, screen_y, press_ms)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// threshold=3 の挙動: 1〜2 回目は false (継続)、3 回目で true (伝播)。
+    /// ROB-5 の核となる挙動 (一過性失敗 2 回までは耐える) を機械的に保証する。
+    #[test]
+    fn capture_retry_holds_until_threshold() {
+        let mut failures = 0u32;
+        // 1 回目失敗: 継続
+        assert!(!should_propagate_capture_failure(&mut failures, 3));
+        assert_eq!(failures, 1);
+        // 2 回目失敗: 継続
+        assert!(!should_propagate_capture_failure(&mut failures, 3));
+        assert_eq!(failures, 2);
+        // 3 回目失敗: 伝播
+        assert!(should_propagate_capture_failure(&mut failures, 3));
+        assert_eq!(failures, 3);
+    }
+
+    /// 連続成功でカウンタがリセットされた前提なら、再び閾値まで耐える。
+    /// (リセットは呼び出し側が `consecutive_capture_failures = 0` でやる)。
+    #[test]
+    fn capture_retry_resets_after_success_simulated() {
+        let mut failures = 0u32;
+        assert!(!should_propagate_capture_failure(&mut failures, 3));
+        assert!(!should_propagate_capture_failure(&mut failures, 3));
+        // 呼び出し側が成功時にやるリセットをここで明示
+        failures = 0;
+        // 以降は再び 3 回耐えられる
+        assert!(!should_propagate_capture_failure(&mut failures, 3));
+        assert!(!should_propagate_capture_failure(&mut failures, 3));
+        assert!(should_propagate_capture_failure(&mut failures, 3));
+    }
+
+    /// threshold=1 (リトライ無効) は 1 回目で即伝播 (旧挙動と等価)。
+    #[test]
+    fn capture_retry_threshold_one_is_legacy_behavior() {
+        let mut failures = 0u32;
+        assert!(should_propagate_capture_failure(&mut failures, 1));
+        assert_eq!(failures, 1);
+    }
+
+    /// threshold=0 は 1 として扱う (サニティ: 「0 で無限リトライ」のような曖昧さを避ける)。
+    /// `threshold.max(1)` で正規化することで、設定ファイルでうっかり 0 を入れても
+    /// 旧挙動 (即伝播) に倒れる。
+    #[test]
+    fn capture_retry_threshold_zero_normalizes_to_one() {
+        let mut failures = 0u32;
+        assert!(should_propagate_capture_failure(&mut failures, 0));
+        assert_eq!(failures, 1);
+    }
+
+    /// 連続失敗カウンタが overflow しない (saturating_add の確認)。
+    /// 実運用ではポーリング deadline でループは止まるので到達しないが、
+    /// 永久ループの一過性事故防止として仕様化しておく。
+    #[test]
+    fn capture_retry_counter_saturates_at_u32_max() {
+        let mut failures = u32::MAX;
+        // saturating_add で u32::MAX のまま据え置き → 閾値超過で伝播
+        assert!(should_propagate_capture_failure(&mut failures, 3));
+        assert_eq!(failures, u32::MAX);
     }
 }
