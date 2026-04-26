@@ -197,6 +197,10 @@ roi = { x_pct = 0.0, y_pct = 0.0, w_pct = 1.0, h_pct = 1.0 }   # optional
 | `roi` | `Option<RoiPct>` | None (画面全体) | クライアント領域に対する比率 |
 
 **バリデーション (全テンプレ共通)**:
+- `file` のパスコンポーネントが `Component::Normal` / `Component::CurDir` 以外
+  （`..`、ドライブレター `C:\`、絶対パス `/...`、UNC `\\server\share` 等）を含む → 失敗
+  - 理由: `templates_dir.join(&file)` で任意ファイルが読み込まれる
+    パス・トラバーサルを防止 (共有 TOML のサプライチェーン懸念)
 - `threshold` が NaN/Inf または `[0.0, 1.0]` 外 → `BotError::Config`
 - `roi.{x_pct, y_pct, w_pct, h_pct}` が NaN/Inf または `[0.0, 1.0]` 外 → 失敗
 - `roi.w_pct <= 0.0 || roi.h_pct <= 0.0` → 失敗
@@ -230,6 +234,7 @@ close_button           threshold=0.93  roi=(0.20,0.50,0.60,0.45)
 | `reisseki_zero_guard.roi` が必ず指定されている | 同上 |
 | 全テンプレの `threshold ∈ [0.0, 1.0]` | 同上 |
 | 全テンプレの `roi.*_pct ∈ [0.0, 1.0]`、`w_pct,h_pct > 0` | 同上 |
+| 全テンプレの `file` が `..` / 絶対パス / ドライブレターを含まない (パストラバーサル防止) | 同上 |
 | ポーリング間隔 (default/post_battle/debounce) ≥ 100ms | 同上 |
 | `stability_poll_ms ≥ 50ms` | 同上 |
 | `loop.coord_cache.search_pad_px ∈ [1, 256]` | 同上 (DESIGN/11 §11.7) |

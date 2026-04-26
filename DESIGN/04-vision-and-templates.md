@@ -41,6 +41,13 @@ impl TemplateLibrary {
 を出力する。テンプレディレクトリが存在しない、ファイルが見つからない場合は
 起動時に `BotError::Config` で停止。
 
+**パストラバーサル対策**: `templates_dir.join(&cfg.file)` で `cfg.file` が
+`..` や絶対パス / ドライブレター (`C:\...`, `\\server\share`) を含むと
+任意ファイル読み込みになり、共有 TOML 経由のサプライチェーン懸念がある。
+このため `Config::validate` 側で `Path::components()` を走査し、
+`Component::Normal` と `Component::CurDir` 以外を含む `file` は
+`BotError::Config` で起動拒否する (`load_from_dir` 到達前に阻止)。
+
 ### Match (`vision/matcher.rs`)
 
 ```rust
