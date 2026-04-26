@@ -37,6 +37,13 @@ next2_settle_wait_ms = 2000
 close_button_timeout_ms = 5000  # ステップ 9 の探索上限 (タイムアウトは正常スキップ)
 debounce_interval_ms = 1500      # 予備 (現状未使用 — 将来同テンプレ消失検出が要るステップ用)
 debounce_timeout_ms = 60000      # 予備 (現状未使用)
+# キャプチャ (PrintWindow / BitBlt) が連続失敗した時の伝播閾値。
+# PrintWindow はフォーカス切替・GPU 一時不在で一過性に失敗することがあり、
+# 1 回の失敗で 30 分超かけたサイクルを捨てるリスクがある (ROB-5)。
+# `failure_count >= 3` になった時点で初めて致命扱い。1 にすると旧挙動。
+# 霊晶石ガード (ステップ 2.5) でもこのリトライは効くが、retry 中に
+# クリックが発行されることは絶対にない (sequence.rs::do_assert_reisseki_zero)。
+capture_retry_threshold = 3
 
 # === 座標キャッシュ機構 (DESIGN/11-coord-cache.md) ===
 # サイクル 1 で記録した静的位置テンプレ (ap_plus_button / use_button /

@@ -125,14 +125,26 @@ fn try_click_template(name, timeout_ms, poll_ms) -> Result<(Option<Match>, f32)>
   let stability_required = config.input.stability_count.max(1);  // 1=旧挙動
   let pos_tol = config.input.stability_position_tol_px;            // 既定 6px
   let score_tol = config.input.stability_score_tol;                // 既定 0.03
+  let capture_retry_threshold = config.loop.poll.capture_retry_threshold;  // 既定 3
 
   let mut best_score = 0.0;
   let mut last_match: Option<Match> = None;
   let mut stable_count = 0;
+  let mut consecutive_capture_failures = 0;
   let deadline = Instant::now() + timeout_ms;
 
   loop:
-    (matched, score) = capture_and_match(template);
+    match capture_and_match(template):
+      Ok((matched, score)) → consecutive_capture_failures = 0
+      Err(err):
+        if should_propagate_capture_failure(&mut consecutive_capture_failures, capture_retry_threshold):
+          return Err(err)               // 連続失敗が閾値に達した → 致命
+        warn "{name} capture failed (n/threshold): {err} — retrying"
+        if Instant::now() >= deadline:
+          warn "{name} not found and capture flapping within {timeout}ms (best={best_score})"
+          return Ok((None, best_score)) // タイムアウトは「未検出」と同じ扱い
+        sleep(max(poll_ms, POLL_SLEEP_FLOOR_MS=50ms))
+        continue
     if score > best_score: best_score = score;
 
     match matched:
@@ -170,6 +182,16 @@ fn try_click_template(name, timeout_ms, poll_ms) -> Result<(Option<Match>, f32)>
 全 sleep は `max(interval, POLL_SLEEP_FLOOR_MS=50ms)` で下限を保証。
 `Config::validate` が起動時にも 100ms 未満を弾くが、ループ内側でも保険を張る。
 
+**安全装置 (一過性キャプチャ失敗のリトライ)**:
+`capture_and_match` が `BotError::CaptureFailed` を返しても、連続失敗カウンタが
+`capture_retry_threshold` (既定 3) に達するまでは `warn!` ログを出して continue する。
+PrintWindow はフォーカス切替や GPU 一時不在で一過性に失敗することがあり、
+1 回の失敗で 30 分超のサイクル待機を捨てるリスクを下げるため (ROB-5)。
+連続失敗カウンタはキャプチャ成功で 0 にリセットされる。
+判定ロジックは `should_propagate_capture_failure` 純粋関数として分離してあり、
+`#[cfg(test)]` ブロックで挙動を機械的に保証している
+(threshold=3 → 1〜2 回目 false, 3 回目 true / 0 は 1 として正規化 / overflow セーフ)。
+
 ## 3.7 do_click_then_min_wait (ハード sleep 戦略)
 
 `ToubatsuStart` / `Next1` / `Next2` 専用。クリック発行後、戦闘演出または
@@ -202,9 +224,21 @@ fn do_click_then_min_wait(step, click_timeout_ms, click_poll_ms, min_wait_ms) ->
 fn do_assert_reisseki_zero(timeout_ms) -> Result<StepLog>:
   let tpl = templates.require("reisseki_zero_guard")?;  // 起動時バリデーションで存在保証
   let deadline = Instant::now() + timeout_ms;
+  let capture_retry_threshold = config.loop.poll.capture_retry_threshold;  // 既定 3
   let mut best_score = 0.0;
+  let mut consecutive_capture_failures = 0;
   loop:
-    (matched, score) = capture_and_match(tpl);
+    match capture_and_match(tpl):
+      Ok((matched, score)) → consecutive_capture_failures = 0
+      Err(err):
+        if should_propagate_capture_failure(&mut consecutive_capture_failures, capture_retry_threshold):
+          return Err(err)                       // 致命扱い (CaptureFailed のまま伝播)
+        warn "reisseki guard capture failed (n/threshold): {err} — retrying (NOT clicking 'use')"
+        if Instant::now() >= deadline:
+          error "REISSEKI GUARD FAILED — capture flapping ..."
+          return Err(BotError::ReissekiGuardFailed { best_score })
+        sleep(max(default_interval_ms, POLL_SLEEP_FLOOR_MS))
+        continue
     if score > best_score: best_score = score;
     if let Some(m) = matched:
       info "reisseki guard PASS (score=..., threshold=...)"
@@ -219,6 +253,13 @@ fn do_assert_reisseki_zero(timeout_ms) -> Result<StepLog>:
 副作用ロジックそのものが存在しないこと** をコード上で機械的に保証するため。
 `run_loop` 側で `BotError::ReissekiGuardFailed` を専用にハンドル
 (全サイクル中断、ログレベル `error`) する。
+
+**capture retry の不変条件**:
+連続キャプチャ失敗のリトライ分岐は **continue するだけ** で、
+クリック発行ロジックを増やしていない。retry 中も「ガード未確認」のままなので、
+リトライが何回続こうがクリックは絶対に発行されない。
+連続失敗が閾値超過 → `BotError::CaptureFailed` 伝播 (これも当然クリック発行なし)。
+deadline 超過 → `BotError::ReissekiGuardFailed` 伝播 (既存パスと同一)。
 
 詳細は [`08-safety-and-errors.md`](08-safety-and-errors.md) を参照。
 
