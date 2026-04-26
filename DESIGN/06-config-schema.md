@@ -74,21 +74,22 @@ debounce_timeout_ms = 60000          # 予備 (現状未使用)
 **注意 (`default.toml` ⇄ コード既定の意図的な乖離)**:
 `post_battle_min_wait_ms` と `close_button_timeout_ms` は `default.toml` の値が
 コード側のフォールバック既定 (`fn default_*_ms()`) と **意図的に異なる**。
-下表は **コード既定** を示す (`default.toml` 値は前段の TOML サンプルを参照)。
 `default.toml` 値はベータ運用での実機調整値で、起動時は TOML 側が優先。
+下表で 「TOML サンプル (前段の `[loop.poll]` ブロック) / `default.toml` 既定列 / コード既定列」
+の 3 値が縦並びで対比できる。乖離行は `*` で示す。
 
-| キー | コード既定 | 用途 |
-|---|---|---|
-| `default_interval_ms` | 1500 | Step 1〜5, 8, 9 の通常ポーリング間隔 |
-| `default_timeout_ms` | 60_000 | 通常ステップの未検出タイムアウト |
-| `post_battle_interval_ms` | 7_000 | Step 7 (Next1) のロング待機ポーリング |
-| `post_battle_timeout_ms` | 2_700_000 | Step 7 探索の最大時間 = 45 分 |
-| `post_battle_min_wait_ms` | 1_500_000 | ToubatsuStart 後のハード sleep (25 分。CLI `--post-battle-min-wait-ms` で上書き) |
-| `next1_settle_wait_ms` | 3_000 | Next1 後の画面遷移待ち |
-| `next2_settle_wait_ms` | 2_000 | Next2 後の「報酬獲得!!」モーダルアニメ待ち |
-| `close_button_timeout_ms` | 30_000 | Close 探索上限 (タイムアウトは正常スキップ) |
-| `debounce_interval_ms` | 1_500 | 現状未使用 (将来再導入用に残置) |
-| `debounce_timeout_ms` | 60_000 | 同上 |
+| キー | コード既定 | `default.toml` 既定 | 用途 |
+|---|---|---|---|
+| `default_interval_ms` | 1500 | 1500 | Step 1〜5, 8, 9 の通常ポーリング間隔 |
+| `default_timeout_ms` | 60_000 | 60_000 | 通常ステップの未検出タイムアウト |
+| `post_battle_interval_ms` | 7_000 | 7_000 | Step 7 (Next1) のロング待機ポーリング |
+| `post_battle_timeout_ms` | 2_700_000 | 2_700_000 | Step 7 探索の最大時間 = 45 分 |
+| `post_battle_min_wait_ms` * | 1_500_000 (25 分) | 1_650_000 (27.5 分) | ToubatsuStart 後のハード sleep (CLI `--post-battle-min-wait-ms` で上書き可) |
+| `next1_settle_wait_ms` | 3_000 | 3_000 | Next1 後の画面遷移待ち |
+| `next2_settle_wait_ms` | 2_000 | 2_000 | Next2 後の「報酬獲得!!」モーダルアニメ待ち |
+| `close_button_timeout_ms` * | 30_000 | 5_000 | Close 探索上限 (タイムアウトは正常スキップ) |
+| `debounce_interval_ms` | 1_500 | 1_500 | 現状未使用 (将来再導入用に残置、バリデーション対象) |
+| `debounce_timeout_ms` | 60_000 | 60_000 | 同上 |
 
 **バリデーション**:
 `default_interval_ms` / `post_battle_interval_ms` / `debounce_interval_ms` のいずれかが

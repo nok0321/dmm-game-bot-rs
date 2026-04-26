@@ -22,6 +22,8 @@
 ┌──────────────────────────────────────────────────────┐
 │  ドメイン層 (domain/)                                   │
 │  - Step enum (10 種: ApPlus..Close)                    │
+│    (うちクリックを伴うのは 9 種、テンプレ画像も 9 種     │
+│     — 詳細は DESIGN/01 §1.2 用語ガイドライン)            │
 │  - StepLog (1 ステップの実行記録)                        │
 │  - Action / GuardAction enum (DSL 化用、現状未使用)     │
 └──────────────────────────────────────────────────────┘
@@ -60,7 +62,10 @@ dmm-game-bot/
 ├── .cargo/config.toml          # crt-static
 ├── config/
 │   └── default.toml            # 9 種テンプレ + ROI + パラメータ
-├── templates/
+├── templates/                  # 9 種 PNG。Step enum 10 要素から Next1/Next2 が
+│   │                           # next_button.png を共有して 9 にまで縮約。
+│   │                           # `reisseki_zero_guard.png` は Step::ReissekiGuard
+│   │                           # (Step 3 UseButton の前段アサート) 専用。
 │   ├── ap_plus_button.png      # 9 種テンプレ画像
 │   ├── ap_recovered_use_max.png
 │   ├── reisseki_zero_guard.png
