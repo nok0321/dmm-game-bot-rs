@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -336,6 +336,23 @@ impl Config {
     pub fn validate(&self) -> Result<()> {
         // --- テンプレ全般 ---
         for (name, t) in &self.templates {
+            // `templates_dir.join(&t.file)` で `t.file` が `..` や絶対パス・
+            // ドライブレターを含むと任意ファイル読み込みになり、共有 TOML 経由で
+            // 別ファイルを差し替えられるサプライチェーン懸念がある。
+            // `Component::Normal`（と `CurDir` = `.`）のみ許可。
+            for component in Path::new(&t.file).components() {
+                match component {
+                    Component::Normal(_) | Component::CurDir => {}
+                    _ => {
+                        return Err(BotError::Config(format!(
+                            "template '{}': file '{}' must be a plain relative path \
+                             (no '..', no drive/root prefix); got component {:?}",
+                            name, t.file, component
+                        )));
+                    }
+                }
+            }
+
             if !t.threshold.is_finite() || !(0.0..=1.0).contains(&t.threshold) {
                 return Err(BotError::Config(format!(
                     "template '{}': threshold {} not finite or out of [0.0, 1.0]",
@@ -647,6 +664,58 @@ mod tests {
         let mut cfg = base_config();
         cfg.input.pre_click_min_ms = 200;
         cfg.input.pre_click_max_ms = 200;
+        assert!(cfg.validate().is_ok());
+    }
+
+    // === templates.file パストラバーサル (SEC-1) ===
+
+    #[test]
+    fn validate_rejects_template_file_with_parent_dir() {
+        let mut cfg = base_config();
+        cfg.templates.insert(
+            "evil".into(),
+            TemplateConfig {
+                file: "../../../Windows/system.ini".into(),
+                threshold: 0.93,
+                roi: None,
+            },
+        );
+        let err = cfg.validate().unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("evil"), "msg = {}", msg);
+        assert!(msg.contains(".."), "msg = {}", msg);
+    }
+
+    #[test]
+    fn validate_rejects_template_file_with_absolute_path() {
+        let mut cfg = base_config();
+        cfg.templates.insert(
+            "evil".into(),
+            TemplateConfig {
+                file: "/etc/passwd".into(),
+                threshold: 0.93,
+                roi: None,
+            },
+        );
+        let err = cfg.validate().unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("evil"), "msg = {}", msg);
+        // RootDir コンポーネントが拒否される (Linux/Windows 共通)。
+        assert!(msg.contains("plain relative path"), "msg = {}", msg);
+    }
+
+    #[test]
+    fn validate_accepts_template_file_subdirectory() {
+        // 通常のサブディレクトリ参照 (`Component::Normal` のみで構成) は許可される。
+        let mut cfg = base_config();
+        cfg.templates.insert(
+            "nested".into(),
+            TemplateConfig {
+                file: "subdir/foo.png".into(),
+                threshold: 0.93,
+                roi: None,
+            },
+        );
         assert!(cfg.validate().is_ok());
     }
 }
