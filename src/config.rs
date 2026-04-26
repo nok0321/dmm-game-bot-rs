@@ -421,6 +421,39 @@ impl Config {
             )));
         }
 
+        // --- min <= max の対称性 ([input] の min/max ペア) ---
+        // `humanize::random_press_duration_ms` 等は逆転時に安全側で min を返すが、
+        // TOML 編集ミス (例: pre_click_min_ms=300, pre_click_max_ms=150) を
+        // 起動前に検出する方が望ましい。ここで機械的に弾く。
+        let i = &self.input;
+        for (label_min, v_min, label_max, v_max) in [
+            (
+                "click_press_duration_min_ms",
+                i.click_press_duration_min_ms,
+                "click_press_duration_max_ms",
+                i.click_press_duration_max_ms,
+            ),
+            (
+                "pre_click_min_ms",
+                i.pre_click_min_ms,
+                "pre_click_max_ms",
+                i.pre_click_max_ms,
+            ),
+            (
+                "post_click_min_ms",
+                i.post_click_min_ms,
+                "post_click_max_ms",
+                i.post_click_max_ms,
+            ),
+        ] {
+            if v_min > v_max {
+                return Err(BotError::Config(format!(
+                    "input.{} ({}) must be <= input.{} ({})",
+                    label_min, v_min, label_max, v_max
+                )));
+            }
+        }
+
         Ok(())
     }
 }
@@ -571,5 +604,49 @@ mod tests {
         // 捨てないため、最低 3 回は耐える挙動を維持する)。
         assert_eq!(default_capture_retry_threshold(), 3);
         assert_eq!(PollConfig::default().capture_retry_threshold, 3);
+    }
+
+    // === [input] min/max 対称性 (ROB-7) ===
+
+    #[test]
+    fn validate_rejects_inverted_click_press_duration() {
+        let mut cfg = base_config();
+        cfg.input.click_press_duration_min_ms = 200;
+        cfg.input.click_press_duration_max_ms = 100;
+        let err = cfg.validate().unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("click_press_duration_min_ms"));
+        assert!(msg.contains("click_press_duration_max_ms"));
+    }
+
+    #[test]
+    fn validate_rejects_inverted_pre_click_range() {
+        let mut cfg = base_config();
+        cfg.input.pre_click_min_ms = 300;
+        cfg.input.pre_click_max_ms = 150;
+        let err = cfg.validate().unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("pre_click_min_ms"));
+        assert!(msg.contains("pre_click_max_ms"));
+    }
+
+    #[test]
+    fn validate_rejects_inverted_post_click_range() {
+        let mut cfg = base_config();
+        cfg.input.post_click_min_ms = 800;
+        cfg.input.post_click_max_ms = 400;
+        let err = cfg.validate().unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("post_click_min_ms"));
+        assert!(msg.contains("post_click_max_ms"));
+    }
+
+    #[test]
+    fn validate_accepts_equal_min_max() {
+        // min == max は退化的だが「逆転ではない」ので許容する。
+        let mut cfg = base_config();
+        cfg.input.pre_click_min_ms = 200;
+        cfg.input.pre_click_max_ms = 200;
+        assert!(cfg.validate().is_ok());
     }
 }
