@@ -38,6 +38,12 @@ mod imp {
     /// PrintWindow に渡す PW_RENDERFULLCONTENT (0x02)。Chrome 等の GPU 描画ウィンドウ用。
     const PW_RENDERFULLCONTENT: u32 = 0x00000002;
 
+    fn dim_to_i32(value: u32, label: &str) -> Result<i32> {
+        i32::try_from(value).map_err(|_| {
+            BotError::CaptureFailed(format!("{} {} exceeds i32 range", label, value))
+        })
+    }
+
     fn capture_with_bitblt_from_screen(
         client_screen_x: i32,
         client_screen_y: i32,
@@ -49,6 +55,8 @@ mod imp {
                 "client area has zero size".to_string(),
             ));
         }
+        let width_i32 = dim_to_i32(width, "width")?;
+        let height_i32 = dim_to_i32(height, "height")?;
 
         unsafe {
             let screen_dc = GetDC(HWND(ptr::null_mut()));
@@ -63,7 +71,7 @@ mod imp {
                         "CreateCompatibleDC failed".to_string(),
                     ));
                 }
-                let bitmap = CreateCompatibleBitmap(screen_dc, width as i32, height as i32);
+                let bitmap = CreateCompatibleBitmap(screen_dc, width_i32, height_i32);
                 if bitmap.is_invalid() {
                     let _ = DeleteDC(mem_dc);
                     return Err(BotError::CaptureFailed(
@@ -78,8 +86,8 @@ mod imp {
                     mem_dc,
                     0,
                     0,
-                    width as i32,
-                    height as i32,
+                    width_i32,
+                    height_i32,
                     screen_dc,
                     client_screen_x,
                     client_screen_y,
@@ -111,6 +119,8 @@ mod imp {
                 "window area has zero size".to_string(),
             ));
         }
+        let width_i32 = dim_to_i32(width, "width")?;
+        let height_i32 = dim_to_i32(height, "height")?;
 
         unsafe {
             let win_dc = GetDC(hwnd);
@@ -125,7 +135,7 @@ mod imp {
                         "CreateCompatibleDC failed".to_string(),
                     ));
                 }
-                let bitmap = CreateCompatibleBitmap(win_dc, width as i32, height as i32);
+                let bitmap = CreateCompatibleBitmap(win_dc, width_i32, height_i32);
                 if bitmap.is_invalid() {
                     let _ = DeleteDC(mem_dc);
                     return Err(BotError::CaptureFailed(
@@ -159,11 +169,13 @@ mod imp {
         width: u32,
         height: u32,
     ) -> Result<RgbaImage> {
+        let width_i32 = dim_to_i32(width, "width")?;
+        let height_i32 = dim_to_i32(height, "height")?;
         let mut bmi = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
                 biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: width as i32,
-                biHeight: -(height as i32),
+                biWidth: width_i32,
+                biHeight: -height_i32,
                 biPlanes: 1,
                 biBitCount: 32,
                 biCompression: BI_RGB.0,
